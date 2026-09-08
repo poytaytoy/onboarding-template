@@ -66,7 +66,7 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
 
   // loop to populate each entry with the heat spread formula  
 
-  #pragma omp parallel for schedule(static) num_threads(8)
+  #pragma omp parallel for schedule(static) num_threads(4)
 
   for (std::size_t i = 1; i < rows - 1; ++i) {
 
