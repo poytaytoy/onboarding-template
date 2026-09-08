@@ -4,6 +4,7 @@
 #include <vector> 
 #include <thread> 
 #include <omp.h>
+#include <cstring>
 
 // Starter Grid for the 2D heat-diffusion problem.
 //
@@ -53,16 +54,17 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   const double* __restrict old_data = old_grid.data();
   double* __restrict new_data = new_grid.data();
 
-  // populate the boundary grid with the old grid entries 
-  for (std::size_t i = 0; i < rows; ++i) {
-    new_data[i * cols] = old_data[i * cols];
-    new_data[i * cols + (cols - 1)] = old_data[i * cols + (cols - 1)];
-  }
+  std::memcpy(
+    new_data,
+    old_data,
+    cols * sizeof(double)
+  );
 
-  for (std::size_t j = 1; j < cols - 1; ++j) {
-    new_data[j] = old_data[j];
-    new_data[(rows - 1) * cols + j] = old_data[(rows - 1) * cols + j];
-  }
+  std::memcpy(
+      new_data + (rows - 1) * cols,
+      old_data + (rows - 1) * cols,
+      cols * sizeof(double)
+  );
 
   // loop to populate each entry with the heat spread formula  
   #pragma omp parallel for schedule(static)
@@ -72,6 +74,9 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     const double* bottom = old_data + (i + 1) * cols;
     double* out = new_data + i * cols;
     
+    out[0] = mid[0];
+    out[cols - 1] = mid[cols - 1];
+
     #pragma omp simd
     for (std::size_t j = 1; j < cols - 1; ++j) {
       out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
