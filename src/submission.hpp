@@ -35,9 +35,9 @@ public:
     return grid_[i * cols_ + j]; 
   };
 
-  double* data() {return grid_.data();}
+  inline double* data() {return grid_.data();}
 
-  const double* data() const {return grid_.data();}
+  inline const double* data() const {return grid_.data();}
 
 };  
 
@@ -66,21 +66,15 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
 
   // loop to populate each entry with the heat spread formula  
 
-  #pragma omp parallel for schedule(static) num_threads(4)
-
+  #pragma omp parallel
   for (std::size_t i = 1; i < rows - 1; ++i) {
+    const double* top = old_data + (i - 1) * cols;
+    const double* mid = old_data + i * cols;
+    const double* bottom = old_data + (i + 1) * cols;
+    double* out = new_data + i * cols;
 
     for (std::size_t j = 1; j < cols - 1; ++j) {
-
-      const double top    = old_data[(i - 1) * cols + j];
-      const double mid    = old_data[i * cols + j];
-      const double bottom = old_data[(i + 1) * cols + j];
-      const double left   = old_data[i * cols + (j - 1)];
-      const double right  = old_data[i * cols + (j + 1)];
-
-      new_data[i * cols + j] = 0.5 * mid + 0.125 * (top + bottom + left + right);
-
+      out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
-
 }
