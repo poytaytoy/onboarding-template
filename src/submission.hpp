@@ -45,7 +45,7 @@ public:
 // Apply the five-point stencil over all interior points, copying the boundary
 // values unchanged from old_grid to new_grid. Implement your solution here.
 
-void apply_stencil(const Grid& old_grid, Grid& new_grid) {
+inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
 
   const std::size_t rows = old_grid.rows();
   const std::size_t cols = old_grid.cols();
