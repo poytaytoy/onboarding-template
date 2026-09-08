@@ -54,6 +54,8 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   const double* __restrict old_data = old_grid.data();
   double* __restrict new_data = new_grid.data();
 
+
+  // copy the first and last row of the boundary from old to the new 
   std::memcpy(
     new_data,
     old_data,
@@ -74,6 +76,7 @@ void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     const double* bottom = old_data + (i + 1) * cols;
     double* out = new_data + i * cols;
     
+    // populate column boundary from old to new 
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
 
