@@ -79,7 +79,8 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     // populate column boundary from old to new 
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
-    
+
+    #pragma omp simd
     for (std::size_t j = 1; j < cols - 1; ++j) {
       out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
