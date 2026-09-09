@@ -25,14 +25,14 @@ public:
   inline Grid(std::size_t rows, std::size_t cols)
     : rows_(rows), cols_(cols), grid_(rows * cols) {}
 
-  inline std::size_t rows() const { return rows_; }  
-  inline std::size_t cols() const { return cols_; }
+  std::size_t rows() const { return rows_; }  
+  std::size_t cols() const { return cols_; }
 
-  inline double& operator()(std::size_t i, std::size_t j){
+  double& operator()(std::size_t i, std::size_t j){
     return grid_[i * cols_ + j]; 
   };
 
-  inline double  operator()(std::size_t i, std::size_t j) const{
+  double  operator()(std::size_t i, std::size_t j) const{
     return grid_[i * cols_ + j]; 
   };
 
