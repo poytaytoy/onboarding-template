@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector> 
-#include <thread> 
 #include <omp.h>
 #include <cstring>
 #include <cmath> 
@@ -25,11 +24,11 @@ private:
 
   std::size_t rows_;
   std::size_t cols_;
-  std::vector<double> grid_; 
+  mutable std::vector<double> grid_;
 
 public:
 
-  void switch_to_unquantized() {
+  void switch_to_unquantized() const {
     // Preserve every computed cell before making grid_ authoritative again.
     if (is_quantized_yet_) {
       for (std::size_t idx = 0; idx < grid_.size(); ++idx) {
@@ -48,6 +47,11 @@ public:
   mutable double min_value_ = +INFINITY;  
   mutable double quant_; 
   mutable double dequant_;
+
+  mutable double max_error_rate_ = 0;  
+  mutable double max_error_per_step_ = 0; 
+  mutable bool force_double_ = false;
+  static constexpr double kErrorBudget = 5e-7;
 
   Grid(std::size_t rows, std::size_t cols)
     : rows_(rows), cols_(cols), grid_(rows * cols), grid_quant_(rows * cols) {}
@@ -77,7 +81,7 @@ public:
   inline uint32_t* data_quantized() {return grid_quant_.data();}
 
   inline void initialize_quantization_grid() const {
-    if (is_quantized_yet_ || bad_){
+    if (is_quantized_yet_ || bad_ || force_double_){
       return; 
     }
 
@@ -100,6 +104,19 @@ public:
 
     dequant_ = range / static_cast<double>(QMAX);
 
+    const double initial_error = max_error_rate_ + 0.5 * dequant_;
+    const double step_error = 2.0 * dequant_;
+
+    if (!(dequant_ > 0.0) || !std::isfinite(quant_) ||
+        !std::isfinite(initial_error + step_error) ||
+        initial_error + step_error > kErrorBudget) {
+      force_double_ = true;
+      return;
+    }
+
+    max_error_rate_ = initial_error;
+    max_error_per_step_ = step_error;
+
     for (size_t i = 0; i < rows_ * cols_; i ++ ) {
       grid_quant_[i] = static_cast<uint32_t>(std::llround((grid_[i] - min_value_) * quant_));
     }
@@ -112,6 +129,8 @@ public:
     min_value_ = old_grid.min_value_; 
     quant_ = old_grid.quant_; 
     dequant_ = old_grid.dequant_; 
+    max_error_rate_ = old_grid.max_error_rate_ + old_grid.max_error_per_step_;
+    max_error_per_step_ = old_grid.max_error_per_step_; 
   }
 };  
 
@@ -209,15 +228,26 @@ inline void apply_stencil_regular(const Grid& old_grid, Grid& new_grid) {
   }
 }
 
-inline void apply_stencil(const Grid& old_grid, Grid& new_grid){
-  old_grid.initialize_quantization_grid(); 
+inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
+  old_grid.initialize_quantization_grid();
+
+  if (old_grid.is_quantized_yet_ &&
+      old_grid.max_error_rate_ + old_grid.max_error_per_step_ > Grid::kErrorBudget) {
+    old_grid.switch_to_unquantized();
+    old_grid.force_double_ = true;
+  }
+
   new_grid.is_quantized_yet_ = false;
   new_grid.bad_ = false;
-  
 
-  if (old_grid.bad_){
-    apply_stencil_regular(old_grid, new_grid); 
-  } else{ 
+  // Carry the simulation's state into the destination buffer.
+  new_grid.force_double_ = old_grid.force_double_;
+  new_grid.max_error_rate_ = old_grid.max_error_rate_;
+  new_grid.max_error_per_step_ = old_grid.max_error_per_step_;
+
+  if (old_grid.is_quantized_yet_) {
     apply_stencil_quantized(old_grid, new_grid);
+  } else {
+    apply_stencil_regular(old_grid, new_grid);
   }
 }
