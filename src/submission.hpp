@@ -49,7 +49,6 @@ public:
   mutable double dequant_;
 
   mutable double max_error_rate_ = 0;  
-  mutable double max_error_per_step_ = 0;
   mutable int num_steps_ = 0;  
   mutable bool force_double_ = false;
   static constexpr double kErrorBudget = 1e-6;
@@ -105,19 +104,16 @@ public:
 
     dequant_ = range / static_cast<double>(QMAX);
 
-    const double initial_error = max_error_rate_ + 0.5 * dequant_;
-    // this just a guest lowkey 
-    const double step_error = 2.0 * dequant_;
+    const double initial_error = 0.5 * dequant_;
+    const double stencil_error = 3.0 * dequant_;
 
     if (!(dequant_ > 0.0) || !std::isfinite(quant_) ||
-        !std::isfinite(initial_error + step_error) ||
-        initial_error + step_error > kErrorBudget) {
+        !std::isfinite(stencil_error) || stencil_error > kErrorBudget) {
       force_double_ = true;
       return;
     }
 
     max_error_rate_ = initial_error;
-    max_error_per_step_ = step_error;
 
     for (size_t i = 0; i < rows_ * cols_; i ++ ) {
       grid_quant_[i] = static_cast<uint32_t>(std::llround((grid_[i] - min_value_) * quant_));
@@ -131,8 +127,7 @@ public:
     min_value_ = old_grid.min_value_; 
     quant_ = old_grid.quant_; 
     dequant_ = old_grid.dequant_; 
-    max_error_rate_ = old_grid.max_error_rate_ + old_grid.max_error_per_step_;
-    max_error_per_step_ = old_grid.max_error_per_step_; 
+    max_error_rate_ = 3.0 * dequant_;
   }
 };  
 
@@ -232,8 +227,7 @@ inline void apply_stencil_regular(const Grid& old_grid, Grid& new_grid) {
 inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   old_grid.initialize_quantization_grid();
 
-  if (old_grid.is_quantized_yet_ &&
-      old_grid.max_error_rate_ + old_grid.max_error_per_step_ > Grid::kErrorBudget) {
+  if (old_grid.is_quantized_yet_ && 3.0 * old_grid.dequant_ > Grid::kErrorBudget) {
     old_grid.switch_to_unquantized();
     old_grid.force_double_ = true;
   }
@@ -244,7 +238,6 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   // Carry the simulation's state into the destination buffer.
   new_grid.force_double_ = old_grid.force_double_;
   new_grid.max_error_rate_ = old_grid.max_error_rate_;
-  new_grid.max_error_per_step_ = old_grid.max_error_per_step_;
 
   if (old_grid.is_quantized_yet_) {
     apply_stencil_quantized(old_grid, new_grid);
