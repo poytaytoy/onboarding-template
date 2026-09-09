@@ -17,7 +17,7 @@
 // everything else is yours.
 
 //divided by 4 and subtract by 1 to not overflow in the 4 add operations
-constexpr uint32_t QMAX = std::numeric_limits<uint32_t>::max() / 8 - 1;
+constexpr uint32_t QMAX = std::numeric_limits<uint32_t>::max();
 
 class Grid {
   
@@ -89,7 +89,17 @@ public:
 
     quant_ = static_cast<double>(QMAX) / (max_value - min_value_);
 
-    dequant_ = 1.0 / quant_; 
+    dequant_ = range / static_cast<double>(QMAX);
+
+    constexpr double kMaximumQuantizationStep = 1e-6 / 4.0;
+
+    if (!std::isfinite(dequant_) ||
+        dequant_ > kMaximumQuantizationStep) {
+        bad_ = true;
+        return;
+    }
+
+    quant_ = 1.0 / dequant_;
 
     for (size_t i = 0; i < rows_ * cols_; i ++ ) {
       grid_quant_[i] = static_cast<uint32_t>(std::llround((grid_[i] - min_value_) * quant_));
