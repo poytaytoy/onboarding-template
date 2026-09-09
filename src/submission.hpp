@@ -29,6 +29,17 @@ private:
 
 public:
 
+  void switch_to_unquantized() {
+    // Preserve every computed cell before making grid_ authoritative again.
+    if (is_quantized_yet_) {
+      for (std::size_t idx = 0; idx < grid_.size(); ++idx) {
+        grid_[idx] = static_cast<double>(grid_quant_[idx]) * dequant_ + min_value_;
+      }
+      is_quantized_yet_ = false;
+    }
+    bad_ = false;
+  }
+
   // if not quantizable ex, max and min are the same 
   mutable bool bad_ = false; 
   mutable std::vector<uint32_t> grid_quant_; 
@@ -45,17 +56,15 @@ public:
   std::size_t cols() const { return cols_; }
 
   double& operator()(std::size_t i, std::size_t j) {
-    is_quantized_yet_ = false; // optional but sensible
+    switch_to_unquantized();
     return grid_[i * cols_ + j];
   }
 
   double operator()(std::size_t i, std::size_t j) const {
     const std::size_t idx = i * cols_ + j;
-
     if (is_quantized_yet_) {
       return static_cast<double>(grid_quant_[idx]) * dequant_ + min_value_;
     }
-
     return grid_[idx];
   }
 
