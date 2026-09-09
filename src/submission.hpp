@@ -107,7 +107,7 @@ public:
 
     const double initial_error = max_error_rate_ + 0.5 * dequant_;
     // this just a guest lowkey 
-    const double step_error = 0.05 * dequant_;
+    const double step_error = 0.1 * dequant_;
 
     if (!(dequant_ > 0.0) || !std::isfinite(quant_) ||
         !std::isfinite(initial_error + step_error) ||
