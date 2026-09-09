@@ -72,8 +72,8 @@ public:
       return; 
     }
 
-    // quantization formula -> q_x = q * (x - min_value)
-    double max_value = -INFINITY;
+    min_value_ = std::numeric_limits<double>::infinity();
+    double max_value = -std::numeric_limits<double>::infinity();
 
     for (const auto& x : grid_) {
       max_value = std::max(x, max_value); 
@@ -213,6 +213,8 @@ inline void apply_stencil_regular(const Grid& old_grid, Grid& new_grid) {
 inline void apply_stencil(const Grid& old_grid, Grid& new_grid){
   old_grid.initialize_quantization_grid(); 
   new_grid.is_quantized_yet_ = false;
+  new_grid.bad_ = false;
+  
 
   if (old_grid.bad_){
     apply_stencil_regular(old_grid, new_grid); 
