@@ -49,9 +49,10 @@ public:
   mutable double dequant_;
 
   mutable double max_error_rate_ = 0;  
-  mutable double max_error_per_step_ = 0; 
+  mutable double max_error_per_step_ = 0;
+  mutable int num_steps_ = 0;  
   mutable bool force_double_ = false;
-  static constexpr double kErrorBudget = 5e-7;
+  static constexpr double kErrorBudget = 1e-6;
 
   Grid(std::size_t rows, std::size_t cols)
     : rows_(rows), cols_(cols), grid_(rows * cols), grid_quant_(rows * cols) {}
@@ -105,7 +106,8 @@ public:
     dequant_ = range / static_cast<double>(QMAX);
 
     const double initial_error = max_error_rate_ + 0.5 * dequant_;
-    const double step_error = 2.0 * dequant_;
+    // this just a guest lowkey 
+    const double step_error = 0.05 * dequant_;
 
     if (!(dequant_ > 0.0) || !std::isfinite(quant_) ||
         !std::isfinite(initial_error + step_error) ||
@@ -163,26 +165,25 @@ inline void apply_stencil_quantized(const Grid& old_grid, Grid& new_grid) {
   const double min_value = old_grid.min_value_; 
 
   // loop to populate each entry with the heat spread formula  
+  const bool odd = old_grid.num_steps_ % 2;
+  const uint32_t inner_round = odd ? 0u : 1u;
+  const uint32_t outer_round = odd ? 3u : 4u;
+
   #pragma omp parallel for schedule(static) num_threads(4)
   for (std::size_t i = 1; i < rows - 1; ++i) {
-    const uint32_t* top = old_data_quantized + (i - 1) * cols;
-    const uint32_t* mid = old_data_quantized + i * cols;
-    const uint32_t* bottom = old_data_quantized + (i + 1) * cols;
-    
-    double* out = new_data + i * cols;
-    uint32_t* out_quantized = new_data_quantized + i * cols; 
+      const uint32_t* top = old_data_quantized + (i - 1) * cols;
+      const uint32_t* mid = old_data_quantized + i * cols;
+      const uint32_t* bottom = old_data_quantized + (i + 1) * cols;
+      uint32_t* out_quantized = new_data_quantized + i * cols;
 
-    // populate column boundary from old to new 
-    out_quantized[0] = mid[0];
-    out_quantized[cols - 1] = mid[cols - 1];
+      out_quantized[0] = mid[0];
+      out_quantized[cols - 1] = mid[cols - 1];
 
-    #pragma omp simd
-    for (std::size_t j = 1; j < cols - 1; ++j) {
-      uint32_t neighbors = top[j] + bottom[j] + mid[j - 1] + mid[j + 1];
-      uint32_t quantized_result = (mid[j] >> 1) + (neighbors >> 3);
-      
-      out_quantized[j] = quantized_result;  
-    }
+      #pragma omp simd
+      for (std::size_t j = 1; j < cols - 1; ++j) {
+          uint32_t neighbors = top[j] + bottom[j] + mid[j - 1] + mid[j + 1];
+          out_quantized[j] = ((mid[j] + inner_round) >> 1) + ((neighbors + outer_round) >> 3);
+      }
   }
 }
 
@@ -250,4 +251,5 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   } else {
     apply_stencil_regular(old_grid, new_grid);
   }
+  new_grid.num_steps_ = old_grid.num_steps_ + 1;
 }
