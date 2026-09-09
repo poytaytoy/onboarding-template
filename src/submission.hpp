@@ -17,7 +17,7 @@
 // everything else is yours.
 
 //divided by 4 and subtract by 1 to not overflow in the 4 add operations
-constexpr uint32_t QMAX = std::numeric_limits<uint32_t>::max();
+constexpr uint32_t QMAX = std::numeric_limits<uint32_t>::max() / 4 - 1;
 
 class Grid {
   
@@ -100,16 +100,6 @@ public:
 
     dequant_ = range / static_cast<double>(QMAX);
 
-    constexpr double kMaximumQuantizationStep = 1e-6 / 4.0;
-
-    if (!std::isfinite(dequant_) ||
-        dequant_ > kMaximumQuantizationStep) {
-        bad_ = true;
-        return;
-    }
-
-    quant_ = 1.0 / dequant_;
-
     for (size_t i = 0; i < rows_ * cols_; i ++ ) {
       grid_quant_[i] = static_cast<uint32_t>(std::llround((grid_[i] - min_value_) * quant_));
     }
@@ -169,8 +159,8 @@ inline void apply_stencil_quantized(const Grid& old_grid, Grid& new_grid) {
 
     #pragma omp simd
     for (std::size_t j = 1; j < cols - 1; ++j) {
-      const uint64_t numerator = 4ULL * mid[j] + top[j] + bottom[j] + mid[j - 1] + mid[j + 1];
-      const uint32_t quantized_result = static_cast<uint32_t>((numerator + 4) / 8);
+      uint32_t neighbors = top[j] + bottom[j] + mid[j - 1] + mid[j + 1];
+      uint32_t quantized_result = (mid[j] >> 1) + (neighbors >> 3);
       
       out_quantized[j] = quantized_result;  
     }
