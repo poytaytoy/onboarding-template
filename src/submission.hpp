@@ -164,7 +164,7 @@ inline void apply_stencil_quantized(const Grid& old_grid, Grid& new_grid) {
   const uint32_t inner_round = odd ? 0u : 1u;
   const uint32_t outer_round = odd ? 3u : 4u;
 
-  #pragma omp parallel for schedule(static) num_threads(4)
+  #pragma omp parallel for schedule(static)
   for (std::size_t i = 1; i < rows - 1; ++i) {
       const uint32_t* top = old_data_quantized + (i - 1) * cols;
       const uint32_t* mid = old_data_quantized + i * cols;
@@ -226,11 +226,6 @@ inline void apply_stencil_regular(const Grid& old_grid, Grid& new_grid) {
 
 inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   old_grid.initialize_quantization_grid();
-
-  if (old_grid.is_quantized_yet_ && 3.0 * old_grid.dequant_ > Grid::kErrorBudget) {
-    old_grid.switch_to_unquantized();
-    old_grid.force_double_ = true;
-  }
 
   new_grid.is_quantized_yet_ = false;
   new_grid.bad_ = false;
