@@ -22,7 +22,7 @@ private:
 
 public:
 
-  inline Grid(std::size_t rows, std::size_t cols)
+  Grid(std::size_t rows, std::size_t cols)
     : rows_(rows), cols_(cols), grid_(rows * cols) {}
 
   std::size_t rows() const { return rows_; }  
