@@ -4,7 +4,6 @@
 #include <vector> 
 #include <omp.h>
 #include <cstring>
-#include <immintrin.h>
 
 // Starter Grid for the 2D heat-diffusion problem.
 //
@@ -45,19 +44,10 @@ public:
 // Apply the five-point stencil over all interior points, copying the boundary
 // values unchanged from old_grid to new_grid. Implement your solution here.
 
-// Requires an AVX-capable x86 CPU. Enable AVX here even when the local build
-// does not pass -march=x86-64-v3 like the evaluator does.
-__attribute__((target("avx")))
 inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
 
   const std::size_t rows{old_grid.rows()};
   const std::size_t cols{old_grid.cols()};
-
-  if (rows == 0 || cols == 0) {
-    return;
-  }
-
-  const std::size_t vector_end = 1 + ((cols > 2 ? cols - 2 : 0) / 4) * 4;
 
   // generate the pointers
   const double* __restrict old_data{old_grid.data()};
@@ -88,24 +78,8 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
 
-    const __m256d center_weight = _mm256_set1_pd(0.5);
-    const __m256d neighbor_weight = _mm256_set1_pd(0.125);
-    std::size_t j = 1;
-    for (; j < vector_end; j += 4) {
-      // Adjacent neighbor streams cannot all be aligned. Only load groups
-      // whose four outputs are interior cells, then finish the tail below.
-      const __m256d center = _mm256_loadu_pd(mid + j);
-      __m256d neighbors = _mm256_add_pd(
-          _mm256_loadu_pd(top + j), _mm256_loadu_pd(bottom + j));
-      neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid + j - 1));
-      neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid + j + 1));
-      const __m256d result = _mm256_add_pd(
-          _mm256_mul_pd(center_weight, center),
-          _mm256_mul_pd(neighbor_weight, neighbors));
-      _mm256_storeu_pd(out + j, result);
-    }
-
-    for (; j < cols - 1; ++j) {
+    #pragma omp simd
+    for (std::size_t j = 1; j < cols - 1; ++j) {
       out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
