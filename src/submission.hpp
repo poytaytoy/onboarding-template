@@ -5,8 +5,6 @@
 #include <limits>
 #include <new>
 #include <vector>
-#include <immintrin.h>
-
 
 // Starter Grid for the 2D heat-diffusion problem.
 //
@@ -173,25 +171,8 @@ inline void apply_stencil_impl(const GridView& old_grid, Grid& new_grid) {
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
 
-    std::size_t j = 1;
-
-    const __m256d center_weight = _mm256_set1_pd(0.5);
-    const __m256d neighbor_weight = _mm256_set1_pd(0.125);
-    // Four interior cells per vector; shifted addresses need unaligned loads.
-    for (; j + 4 < cols; j += 4) {
-      const __m256d center = _mm256_loadu_pd(mid + j);
-      __m256d neighbors = _mm256_add_pd(_mm256_loadu_pd(top + j),
-                                      _mm256_loadu_pd(bottom + j));
-      neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid + j - 1));
-      neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid + j + 1));
-      const __m256d result = _mm256_add_pd(
-          _mm256_mul_pd(center_weight, center),
-          _mm256_mul_pd(neighbor_weight, neighbors));
-      _mm256_storeu_pd(out + j, result);
-    }
-
-    // Remaining columns, or the full row when AVX is not enabled.
-    for (; j < cols - 1; ++j) {
+    #pragma omp simd
+    for (std::size_t j = 1; j < cols - 1; ++j) {
       out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
