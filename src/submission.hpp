@@ -168,15 +168,12 @@ inline void apply_stencil_impl(const GridView& old_grid, Grid& new_grid) {
     // without worrying about alias pointers
     double* __restrict out{new_grid.ptr(i, 0)};
 
-    // Side boundaries belong to this row's writer, avoiding overlapping writes.
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
 
-    // Columns are independent and contiguous; shifted neighbors need not be aligned.
     #pragma omp simd
     for (std::size_t j = 1; j < cols - 1; ++j) {
-      out[j] = 0.5 * mid[j]
-               + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
+      out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
 }
