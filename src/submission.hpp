@@ -6,6 +6,9 @@
 #include <new>
 #include <vector>
 
+#include <immintrin.h>
+
+
 // Starter Grid for the 2D heat-diffusion problem.
 //
 // The evaluation harness uses operator() to set initial conditions and to read
@@ -145,6 +148,26 @@ public:
   }
 };
 
+// Update four cells using avx at once
+inline void apply_stencil_avx(const double* top, const double* mid, const double* bottom, double* out) {
+  const __m256d center_weight = _mm256_set1_pd(0.5);
+  const __m256d neighbor_weight = _mm256_set1_pd(0.125);
+
+  const __m256d center = _mm256_loadu_pd(mid);
+
+  __m256d neighbors = _mm256_add_pd(_mm256_loadu_pd(top), _mm256_loadu_pd(bottom));
+
+  neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid - 1));
+  neighbors = _mm256_add_pd(neighbors, _mm256_loadu_pd(mid + 1));
+
+  const __m256d result = _mm256_add_pd(
+      _mm256_mul_pd(center_weight, center),
+      _mm256_mul_pd(neighbor_weight, neighbors));
+  
+  _mm256_storeu_pd(out, result);
+}
+
+
 inline void apply_stencil_impl(const GridView& old_grid, Grid& new_grid) {
   const std::size_t rows{old_grid.rows()};
   const std::size_t cols{old_grid.cols()};
@@ -171,8 +194,18 @@ inline void apply_stencil_impl(const GridView& old_grid, Grid& new_grid) {
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
 
-    #pragma omp simd
-    for (std::size_t j = 1; j < cols - 1; ++j) {
+    std::size_t j = 1;
+
+    // This offers a increased performance from `pragma SIMD` because they use SSE2 which only process 2 double at a time per 
+    // instruction. This will explicitly use AVX which does 4 at at time
+
+    // Four interior cells per vector; shifted addresses need unaligned loads.
+    for (; j + 4 < cols; j += 4) {
+      apply_stencil_avx(top + j, mid + j, bottom + j, out + j);
+    }
+
+    // Remaining columns
+    for (; j < cols - 1; ++j) {
       out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
