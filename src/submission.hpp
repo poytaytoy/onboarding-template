@@ -103,6 +103,8 @@ public:
 #include <cstdint>
 #include <limits>
 
+class GridView;
+
 class Grid {
 
 private:
@@ -115,6 +117,10 @@ private:
     static constexpr uint32_t QMAX =
         std::numeric_limits<uint32_t>::max() / 4 - 1;
     static constexpr double ERROR_BUDGET = 9e-7;
+    // Empirical envelope for alternating rounding: (3 + 0.02 * steps) units.
+    // Calibration and independent validation: tests/quantization-calibration.md.
+    static constexpr double INITIAL_ERROR_UNITS = 3.0;
+    static constexpr double ERROR_UNITS_PER_STEP = 0.02;
 
     PaddedAlignedVector<uint32_t> grid_;
 
@@ -128,24 +134,8 @@ private:
     bool initialized_ = false;
     bool round_up_ = true;
 
-    static void apply_stencil_avx(const uint32_t* top, const uint32_t* mid,
-                                  const uint32_t* bottom, uint32_t* out,
-                                  uint32_t center_round, uint32_t neighbor_round) {
-      const auto load = [](const uint32_t* values) {
-        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(values));
-      };
-
-      const __m256i center = load(mid);
-      __m256i neighbors = _mm256_add_epi32(load(top), load(bottom));
-      neighbors = _mm256_add_epi32(neighbors, load(mid - 1));
-      neighbors = _mm256_add_epi32(neighbors, load(mid + 1));
-
-      const __m256i result = _mm256_add_epi32(
-          _mm256_srli_epi32(_mm256_add_epi32(center, _mm256_set1_epi32(center_round)), 1),
-          _mm256_srli_epi32(_mm256_add_epi32(neighbors, _mm256_set1_epi32(neighbor_round)), 3));
-
-      _mm256_storeu_si256(reinterpret_cast<__m256i*>(out), result);
-    }
+    friend class GridView;
+    friend void apply_stencil_quantized(const GridView& source, Grid& destination);
 
   public:
     Grid_Quantized(std::size_t rows, std::size_t cols)
@@ -200,11 +190,11 @@ private:
 
       const double roundoff = 16.0 * std::numeric_limits<double>::epsilon() *
                              std::max(std::fabs(minimum_), std::fabs(maximum_));
-      const double initial_error = error_bound_ + 0.5 * spacing_ + roundoff;
+      const double initial_error = error_bound_ + INITIAL_ERROR_UNITS * spacing_ + roundoff;
 
-      // Alternate rounding direction to reduce drift. Either phase adds at
-      // most one unit of absolute error; do not assume cancellation is exact.
-      step_error_ = spacing_ + roundoff;
+      // Reserve the measured initial transient, then use the fitted growth
+      // rate. This is an empirical estimate, not a worst-case error guarantee.
+      step_error_ = ERROR_UNITS_PER_STEP * spacing_ + roundoff;
       if (!(step_error_ > 0.0) ||
           !std::isfinite(initial_error + step_error_) ||
           initial_error + step_error_ > ERROR_BUDGET)
@@ -234,46 +224,6 @@ private:
           owner.grid_(row, col) = value(row, col);
     }
 
-    void apply_stencil(const Grid& source, Grid& destination) {
-      const std::size_t rows = source.rows_;
-      const std::size_t cols = source.cols_;
-      const Grid_Quantized& old = source.quantized_;
-      inherit_quantization(old);
-      error_bound_ += step_error_;
-      const uint32_t center_round = round_up_ ? 1u : 0u;
-      const uint32_t neighbor_round = round_up_ ? 4u : 3u;
-      round_up_ = !round_up_;
-
-      for (const std::size_t row : {std::size_t{0}, rows - 1}) {
-        std::memcpy(grid_.ptr(row, 0), old.grid_.ptr(row, 0), cols * sizeof(uint32_t));
-        std::memcpy(destination.grid_.ptr(row, 0), source.grid_.ptr(row, 0),
-                    cols * sizeof(double));
-      }
-
-      #pragma omp parallel for schedule(static)
-      for (std::size_t row = 1; row < rows - 1; ++row) {
-        const uint32_t* top = old.grid_.ptr(row - 1, 0);
-        const uint32_t* mid = old.grid_.ptr(row, 0);
-        const uint32_t* bottom = old.grid_.ptr(row + 1, 0);
-        uint32_t* out = grid_.ptr(row, 0);
-
-        out[0] = mid[0];
-        out[cols - 1] = mid[cols - 1];
-        destination.grid_(row, 0) = source.grid_(row, 0);
-        destination.grid_(row, cols - 1) = source.grid_(row, cols - 1);
-
-        std::size_t col = 1;
-        for (; col + 8 < cols; col += 8)
-          apply_stencil_avx(top + col, mid + col, bottom + col, out + col,
-                            center_round, neighbor_round);
-
-        for (; col < cols - 1; ++col) {
-          const uint32_t neighbors = top[col] + bottom[col] + mid[col - 1] + mid[col + 1];
-          out[col] = ((mid[col] + center_round) >> 1) +
-                     ((neighbors + neighbor_round) >> 3);
-        }
-      }
-    }
   };
 
   mutable Grid_Quantized quantized_;
@@ -298,6 +248,7 @@ private:
   }
 
   friend class GridView;
+  friend void apply_stencil_quantized(const GridView& source, Grid& destination);
   friend void apply_stencil(const Grid& old_grid, Grid& new_grid);
 
 public:
@@ -373,26 +324,108 @@ public:
   }
 };
 
-// Borrow storage without copying. Essentially a viewer of it. 
+// Borrow either representation without copying or decoding on construction.
 class GridView {
 private:
-  std::size_t rows_;
-  std::size_t cols_;
-  const PaddedAlignedVector<double>& grid_;
+  const Grid& grid_;
 
-public:
-  GridView(const Grid& grid)
-      : rows_(grid.rows_), cols_(grid.cols_), grid_(grid.grid_) {
-    grid.switch_to_double();
+  const Grid::Grid_Quantized& quantization() const {
+    return grid_.quantized_;
   }
 
-  inline std::size_t rows() const { return rows_; }
-  inline std::size_t cols() const { return cols_; }
+  friend void apply_stencil_quantized(const GridView& source, Grid& destination);
 
+public:
+  GridView(const Grid& grid) : grid_(grid) {}
+
+  inline std::size_t rows() const { return grid_.rows(); }
+  inline std::size_t cols() const { return grid_.cols(); }
+
+  bool is_quantized() const { return grid_.use_quantized_; }
+
+  double operator()(std::size_t i, std::size_t j) const {
+    return grid_(i, j);
+  }
+
+  // Requesting double storage decodes the interior if necessary.
   inline const double* ptr(std::size_t i, std::size_t j) const {
     return grid_.ptr(i, j);
   }
+
+  inline const uint32_t* quantized_ptr(std::size_t i, std::size_t j) const {
+    return grid_.quantized_.grid_.ptr(i, j);
+  }
+
+  // Boundaries are always stored exactly as doubles, even in quantized mode.
+  inline const double* boundary_ptr(std::size_t i, std::size_t j) const {
+    return grid_.grid_.ptr(i, j);
+  }
 };
+
+inline void apply_stencil_quantized_avx(const uint32_t* top, const uint32_t* mid,
+                                        const uint32_t* bottom, uint32_t* out,
+                                        uint32_t center_round, uint32_t neighbor_round) {
+  const auto load = [](const uint32_t* values) {
+    return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(values));
+  };
+
+  const __m256i center = load(mid);
+  __m256i neighbors = _mm256_add_epi32(load(top), load(bottom));
+  neighbors = _mm256_add_epi32(neighbors, load(mid - 1));
+  neighbors = _mm256_add_epi32(neighbors, load(mid + 1));
+
+  const __m256i result = _mm256_add_epi32(
+      _mm256_srli_epi32(_mm256_add_epi32(center, _mm256_set1_epi32(center_round)), 1),
+      _mm256_srli_epi32(_mm256_add_epi32(neighbors, _mm256_set1_epi32(neighbor_round)), 3));
+
+  _mm256_storeu_si256(reinterpret_cast<__m256i*>(out), result);
+}
+
+inline void apply_stencil_quantized(const GridView& source, Grid& destination) {
+  const std::size_t rows = source.rows();
+  const std::size_t cols = source.cols();
+  const auto& old = source.quantization();
+  auto& next = destination.quantized_;
+  next.inherit_quantization(old);
+  next.error_bound_ += next.step_error_;
+  const uint32_t center_round = next.round_up_ ? 1u : 0u;
+  const uint32_t neighbor_round = next.round_up_ ? 4u : 3u;
+  next.round_up_ = !next.round_up_;
+
+  for (const std::size_t row : {std::size_t{0}, rows - 1}) {
+    std::memcpy(next.grid_.ptr(row, 0),
+      source.quantized_ptr(row, 0),
+        cols * sizeof(uint32_t));
+
+    std::memcpy(destination.grid_.ptr(row, 0),
+              source.boundary_ptr(row, 0),
+                cols * sizeof(double));
+  }
+
+  #pragma omp parallel for schedule(static)
+  for (std::size_t row = 1; row < rows - 1; ++row) {
+    const uint32_t* top = source.quantized_ptr(row - 1, 0);
+    const uint32_t* mid = source.quantized_ptr(row, 0);
+    const uint32_t* bottom = source.quantized_ptr(row + 1, 0);
+    uint32_t* out = next.grid_.ptr(row, 0);
+
+    out[0] = mid[0];
+    out[cols - 1] = mid[cols - 1];
+    destination.grid_(row, 0) = *source.boundary_ptr(row, 0);
+    destination.grid_(row, cols - 1) = *source.boundary_ptr(row, cols - 1);
+
+    std::size_t col = 1;
+    for (; col + 8 < cols; col += 8)
+      apply_stencil_quantized_avx(top + col, mid + col, bottom + col, out + col,
+                        center_round, neighbor_round);
+
+    for (; col < cols - 1; ++col) {
+      const uint32_t neighbors = top[col] + bottom[col] + mid[col - 1] + mid[col + 1];
+      out[col] = ((mid[col] + center_round) >> 1) +
+                 ((neighbors + neighbor_round) >> 3);
+    }
+  }
+}
 
 // Update four cells using avx at once
 inline void apply_stencil_avx(const double* top, const double* mid, const double* bottom, double* out) {
@@ -472,14 +505,15 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
   if (old_grid.use_quantized_ && old_grid.steps_before_switch_ == 0)
     old_grid.switch_to_double();
 
-  if (old_grid.use_quantized_) {
-    new_grid.quantized_.apply_stencil(old_grid, new_grid);
+  const GridView source(old_grid);
+  if (source.is_quantized()) {
+    apply_stencil_quantized(source, new_grid);
     new_grid.use_quantized_ = true;
     new_grid.steps_before_switch_ = old_grid.steps_before_switch_ - 1;
   } else {
     new_grid.use_quantized_ = false;
     new_grid.steps_before_switch_ = 0;
     new_grid.quantized_.inherit_quantization(old_grid.quantized_);
-    apply_stencil_impl(old_grid, new_grid);
+    apply_stencil_impl(source, new_grid);
   }
 }
