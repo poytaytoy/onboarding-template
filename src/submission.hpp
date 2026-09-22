@@ -136,10 +136,24 @@ private:
   std::size_t rows_;
   std::size_t cols_;
   PaddedAlignedVector<double> grid_;
-  ActiveArea active_{};
+  mutable ActiveArea active_{};
+  mutable bool active_dirty_{false};
+
+  // Rebuild bounds once after external writes. Stencil steps need no scan.
+  void detect_active_area() const {
+    if (!active_dirty_) return;
+    active_ = {};
+    for (std::size_t row = 0; row < rows_; ++row) {
+      for (std::size_t col = 0; col < cols_; ++col) {
+        if (grid_(row, col) != 0.0) active_.include(row, col);
+      }
+    }
+    active_dirty_ = false;
+  }
 
   // Clear old destination values only where the next update won't overwrite them.
   void clear_stale_values(const ActiveArea& next) {
+    detect_active_area();
     const ActiveArea previous{active_};
     if (previous.empty() ||
         (!next.empty() && next.first_row <= previous.first_row &&
@@ -168,7 +182,7 @@ private:
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  // Nonzero assignments expand the bounds; zero assignments need no rescan.
+  // External assignments request a bounds refresh before the grid is used.
   class CellProxy {
     Grid& owner_;
     std::size_t row_, col_;
@@ -179,9 +193,7 @@ public:
     operator double() const { return owner_.grid_(row_, col_); }
     CellProxy& operator=(double value) {
       owner_.grid_(row_, col_) = value;
-      if (value != 0.0) {
-        owner_.active_.include(row_, col_);
-      }
+      owner_.active_dirty_ = true;
       return *this;
     }
     CellProxy& operator=(const CellProxy& other) {
@@ -211,7 +223,10 @@ class GridView {
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_} {}
+  explicit GridView(const Grid& grid) : grid_{grid} {
+    grid.detect_active_area();
+    active_ = grid.active_;
+  }
 
   std::size_t rows() const { return grid_.rows(); }
   std::size_t cols() const { return grid_.cols(); }
@@ -266,6 +281,7 @@ inline void apply_stencil_impl(const GridView& input, Grid& destination) {
   next.expand(rows, cols);
   destination.clear_stale_values(next);
   destination.active_ = next;
+  destination.active_dirty_ = false;
   if (next.empty()) {
     return;
   }
