@@ -136,27 +136,11 @@ private:
   std::size_t rows_;
   std::size_t cols_;
   PaddedAlignedVector<double> grid_;
-  mutable ActiveArea active_{};
-  mutable bool bounds_need_scan_{false};
+  ActiveArea active_{};
 
-  // Zero writes may shrink the rectangle. Recheck it once, after the writes finish.
-  const ActiveArea& active_area() const {
-    if (bounds_need_scan_) {
-      const ActiveArea previous{active_};
-      active_ = {};
-      for (std::size_t row = previous.first_row; row < previous.end_row; ++row) {
-        for (std::size_t col = previous.first_col; col < previous.end_col; ++col) {
-          if (grid_(row, col) != 0.0) active_.include(row, col);
-        }
-      }
-      bounds_need_scan_ = false;
-    }
-    return active_;
-  }
-
-  // Usually the next update covers all old values. Clear them only if it doesn't.
+  // Clear old destination values only where the next update won't overwrite them.
   void clear_stale_values(const ActiveArea& next) {
-    const ActiveArea previous{active_area()};
+    const ActiveArea previous{active_};
     if (previous.empty() ||
         (!next.empty() && next.first_row <= previous.first_row &&
          next.end_row >= previous.end_row && next.first_col <= previous.first_col &&
@@ -164,8 +148,19 @@ private:
       return;
     }
     for (std::size_t row = previous.first_row; row < previous.end_row; ++row) {
-      std::fill(grid_.ptr(row, previous.first_col),
-                grid_.ptr(row, previous.end_col), 0.0);
+      double* out{grid_.ptr(row, 0)};
+      if (next.empty() || row < next.first_row || row >= next.end_row) {
+        std::fill(out + previous.first_col, out + previous.end_col, 0.0);
+      } else {
+        const std::size_t left_end{std::min(previous.end_col, next.first_col)};
+        const std::size_t right_begin{std::max(previous.first_col, next.end_col)};
+        if (previous.first_col < left_end) {
+          std::fill(out + previous.first_col, out + left_end, 0.0);
+        }
+        if (right_begin < previous.end_col) {
+          std::fill(out + right_begin, out + previous.end_col, 0.0);
+        }
+      }
     }
   }
 
@@ -173,7 +168,7 @@ private:
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  // Nonzero writes expand bounds immediately; zero writes inside may shrink them.
+  // Nonzero assignments expand the bounds; zero assignments need no rescan.
   class CellProxy {
     Grid& owner_;
     std::size_t row_, col_;
@@ -186,9 +181,6 @@ public:
       owner_.grid_(row_, col_) = value;
       if (value != 0.0) {
         owner_.active_.include(row_, col_);
-      } else if (row_ >= owner_.active_.first_row && row_ < owner_.active_.end_row &&
-                 col_ >= owner_.active_.first_col && col_ < owner_.active_.end_col) {
-        owner_.bounds_need_scan_ = true;
       }
       return *this;
     }
@@ -219,7 +211,7 @@ class GridView {
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_area()} {}
+  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_} {}
 
   std::size_t rows() const { return grid_.rows(); }
   std::size_t cols() const { return grid_.cols(); }
@@ -282,7 +274,7 @@ inline void apply_stencil_impl(const GridView& input, Grid& destination) {
   const std::size_t end_col{std::min(next.end_col, cols - 1)};
   const std::size_t width{next.end_col - next.first_col};
 
-  #pragma omp parallel for schedule(static) num_threads(4)
+  #pragma omp parallel for schedule(static)
   for (std::size_t row = next.first_row; row < next.end_row; ++row) {
     const double* mid{input.ptr(row, 0)};
     double* __restrict out{destination.grid_.ptr(row, 0)};
