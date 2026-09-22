@@ -103,9 +103,19 @@ public:
 struct ActiveArea {
   std::size_t first_row{0}, end_row{0};
   std::size_t first_col{0}, end_col{0};
-  bool valid{true};
 
   bool empty() const { return first_row == end_row || first_col == end_col; }
+
+  void include(std::size_t row, std::size_t col) {
+    if (empty()) {
+      *this = {row, row + 1, col, col + 1};
+    } else {
+      first_row = std::min(first_row, row);
+      end_row = std::max(end_row, row + 1);
+      first_col = std::min(first_col, col);
+      end_col = std::max(end_col, col + 1);
+    }
+  }
 
   // Grow by one cell on each side, stopping at the grid edges.
   void expand(std::size_t rows, std::size_t cols) {
@@ -119,41 +129,18 @@ struct ActiveArea {
   }
 };
 
+class GridView;
+
 class Grid {
 private:
   std::size_t rows_;
   std::size_t cols_;
   PaddedAlignedVector<double> grid_;
-  mutable ActiveArea active_{};
-
-  // Scan only after external assignments; stencil updates maintain the bounds.
-  const ActiveArea& active_area() const {
-    if (active_.valid) {
-      return active_;
-    }
-
-    active_ = {};
-    for (std::size_t row{0}; row < rows_; ++row) {
-      for (std::size_t col{0}; col < cols_; ++col) {
-        if (grid_(row, col) == 0.0) {
-          continue;
-        }
-        if (active_.empty()) {
-          active_ = {row, row + 1, col, col + 1};
-        } else {
-          active_.first_row = std::min(active_.first_row, row);
-          active_.end_row = std::max(active_.end_row, row + 1);
-          active_.first_col = std::min(active_.first_col, col);
-          active_.end_col = std::max(active_.end_col, col + 1);
-        }
-      }
-    }
-    return active_;
-  }
+  ActiveArea active_{};
 
   // Usually the next update covers all old values. Clear them only if it doesn't.
   void clear_stale_values(const ActiveArea& next) {
-    const ActiveArea previous{active_area()};
+    const ActiveArea previous{active_};
     if (previous.empty() ||
         (!next.empty() && next.first_row <= previous.first_row &&
          next.end_row >= previous.end_row && next.first_col <= previous.first_col &&
@@ -166,10 +153,11 @@ private:
     }
   }
 
-  friend void apply_stencil(const Grid& source, Grid& destination);
+  friend class GridView;
+  friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  // Assignments invalidate the bounds, including assignments through a saved proxy.
+  // Nonzero assignments expand the bounds; zero assignments need no rescan.
   class CellProxy {
     Grid& owner_;
     std::size_t row_, col_;
@@ -180,7 +168,9 @@ public:
     operator double() const { return owner_.grid_(row_, col_); }
     CellProxy& operator=(double value) {
       owner_.grid_(row_, col_) = value;
-      owner_.active_.valid = false;
+      if (value != 0.0) {
+        owner_.active_.include(row_, col_);
+      }
       return *this;
     }
     CellProxy& operator=(const CellProxy& other) {
@@ -195,6 +185,33 @@ public:
 
   CellProxy operator()(std::size_t row, std::size_t col) {
     return {*this, row, col};
+  }
+  double operator()(std::size_t row, std::size_t col) const {
+    return grid_(row, col);
+  }
+};
+
+// Read-only access to an existing grid, with a snapshot of its active bounds.
+// Coordinates stay global. Recreate the view after changing the grid's bounds.
+class GridView {
+  const Grid& grid_;
+  ActiveArea active_;
+
+  friend void apply_stencil_impl(const GridView& source, Grid& destination);
+
+public:
+  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_} {}
+
+  std::size_t rows() const { return grid_.rows(); }
+  std::size_t cols() const { return grid_.cols(); }
+  std::size_t first_row() const { return active_.first_row; }
+  std::size_t end_row() const { return active_.end_row; }
+  std::size_t first_col() const { return active_.first_col; }
+  std::size_t end_col() const { return active_.end_col; }
+  bool empty() const { return active_.empty(); }
+
+  const double* ptr(std::size_t row, std::size_t col) const {
+    return grid_.grid_.ptr(row, col);
   }
   double operator()(std::size_t row, std::size_t col) const {
     return grid_(row, col);
@@ -230,17 +247,11 @@ inline void update_row(const double* top, const double* mid,
 }
 
 // Update into a separate grid, clearing stale destination values when needed.
-inline void apply_stencil(const Grid& source, Grid& destination) {
-  const std::size_t rows{source.rows_}, cols{source.cols_};
-  if (rows != destination.rows_ || cols != destination.cols_) {
-    throw std::invalid_argument("Grid dimensions must match");
-  }
-  if (&source == &destination) {
-    throw std::invalid_argument("Stencil needs distinct source and destination grids");
-  }
+inline void apply_stencil_impl(const GridView& input, Grid& destination) {
+  const std::size_t rows{input.rows()}, cols{input.cols()};
 
-  // Heat can only spread by one cell in each direction per step.
-  ActiveArea next{source.active_area()};
+  // Update the new destination grid's active area and clears its old active area.
+  ActiveArea next{input.active_};
   next.expand(rows, cols);
   destination.clear_stale_values(next);
   destination.active_ = next;
@@ -254,7 +265,7 @@ inline void apply_stencil(const Grid& source, Grid& destination) {
 
   #pragma omp parallel for schedule(static) num_threads(4)
   for (std::size_t row = next.first_row; row < next.end_row; ++row) {
-    const double* mid{source.grid_.ptr(row, 0)};
+    const double* mid{input.ptr(row, 0)};
     double* __restrict out{destination.grid_.ptr(row, 0)};
 
     // The outer edges keep their original temperatures.
@@ -270,6 +281,16 @@ inline void apply_stencil(const Grid& source, Grid& destination) {
       out[cols - 1] = mid[cols - 1];
     }
 
-    update_row(source.grid_.ptr(row - 1, 0), mid,source.grid_.ptr(row + 1, 0), out, first_col, end_col);
+    update_row(input.ptr(row - 1, 0), mid, input.ptr(row + 1, 0), out, first_col, end_col);
   }
+}
+
+inline void apply_stencil(const Grid& source, Grid& destination) {
+  if (source.rows() != destination.rows() || source.cols() != destination.cols()) {
+    throw std::invalid_argument("Grid dimensions must match");
+  }
+  if (&source == &destination) {
+    throw std::invalid_argument("Stencil needs distinct source and destination grids");
+  }
+  apply_stencil_impl(GridView{source}, destination);
 }
