@@ -221,7 +221,7 @@ inline void apply_stencil(const Grid& source, Grid& destination) {
   const std::size_t end_col{std::min(next.end_col, cols - 1)};
   const std::size_t width{next.end_col - next.first_col};
 
-  #pragma omp parallel for schedule(static)
+  #pragma omp parallel for schedule(static) num_threads(4)
   for (std::size_t row = next.first_row; row < next.end_row; ++row) {
     const double* mid{source.grid_.ptr(row, 0)};
     double* __restrict out{destination.grid_.ptr(row, 0)};
