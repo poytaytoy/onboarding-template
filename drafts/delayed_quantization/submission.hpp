@@ -111,8 +111,8 @@ private:
   private:
     static constexpr uint32_t QMAX{std::numeric_limits<uint32_t>::max()};
 
-    // Empirical range cutoff for switching to quantized storage.
-    static constexpr double MAX_QUANTIZED_RANGE{100.0};
+    // Empirical cutoff; validation coverage is documented beside this draft.
+    static constexpr double MAX_QUANTIZED_RANGE{8.0};
 
     PaddedAlignedVector<uint32_t> grid_;
 
