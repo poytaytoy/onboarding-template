@@ -109,11 +109,11 @@ private:
 
   class Grid_Quantized {
   private:
-    static constexpr uint32_t QMAX{std::numeric_limits<uint32_t>::max() / 4 - 1};
+    static constexpr uint32_t QMAX{std::numeric_limits<uint32_t>::max()};
 
     static constexpr double ERROR_BUDGET{1e-6};
 
-    static constexpr double INITIAL_ERROR_UNITS{2.0};
+    static constexpr double INITIAL_ERROR_UNITS{2.5};
     static constexpr double ERROR_UNITS_PER_STEP{0.04};
 
     PaddedAlignedVector<uint32_t> grid_;
@@ -341,13 +341,14 @@ public:
   }
 };
 
-// QMAX keeps the four-neighbor sum within uint32_t; recover the combined remainder.
+// Divide before adding to support the full uint32_t range without overflow.
 inline uint32_t quantized_stencil_value(uint32_t center, uint32_t top, uint32_t bottom,
                                        uint32_t left, uint32_t right, uint32_t rounding_offset) {
-  const uint32_t neighbors{top + bottom + left + right};
-  const uint32_t remainder{4u * (center & 1u) + (neighbors & 7u)};
+  const uint32_t whole{(center >> 1) + (top >> 3) + (bottom >> 3) + (left >> 3) + (right >> 3)};
+  const uint32_t remainder{4u * (center & 1u) + (top & 7u) + (bottom & 7u) +
+                           (left & 7u) + (right & 7u)};
 
-  return (center >> 1) + (neighbors >> 3) + ((remainder + rounding_offset) >> 3);
+  return whole + ((remainder + rounding_offset) >> 3);
 }
 
 inline void apply_stencil_quantized(const GridView& source, Grid& destination) {
