@@ -1,3 +1,15 @@
+/*
+    Hi! This is my attempt on making a quantized version of the stencil kernel! Unfortunately, 
+    it didn't work out because the temperate range was too much for my quantization to fit in the 
+    1e-6 error range. Thus, the kernel kept defaulting to the regular double implementation to prevent 
+    the error bound! However, I still wanted to post this work regardless because under circumstances
+    that the quantized kernel do occur, it performs like 2x faster than the regular double kernel on my
+    laptop. 
+
+    I don't really want it to go to waste, BUT in the process, it made me reexamine how the starting 
+    grids are actually geneerated and ugh, it directly led to a cheese with the current submission.
+*/
+
 #pragma once
 
 #include <algorithm>
@@ -111,8 +123,10 @@ private:
   private:
     static constexpr uint32_t QMAX{std::numeric_limits<uint32_t>::max()};
 
-    // Empirical cutoff; validation coverage is documented beside this draft.
-    static constexpr double MAX_QUANTIZED_RANGE{8.0};
+    static constexpr double ERROR_BUDGET{1e-6};
+
+    static constexpr double INITIAL_ERROR_UNITS{2.5};
+    static constexpr double ERROR_UNITS_PER_STEP{0.04};
 
     PaddedAlignedVector<uint32_t> grid_;
 
@@ -121,6 +135,9 @@ private:
 
     double scale_{0.0};
     double spacing_{0.0};
+    double error_bound_{0.0};
+    double step_error_{0.0};
+    bool initialized_{false};
 
     friend class Grid;
     friend class GridView;
@@ -129,9 +146,9 @@ private:
   public:
     Grid_Quantized(std::size_t rows, std::size_t cols) : grid_{rows, cols} {}
 
-    void record_range(double minimum, double maximum) {
-      minimum_ = minimum;
-      maximum_ = maximum;
+    void record_write(double new_value) {
+      minimum_ = std::min(minimum_, new_value);
+      maximum_ = std::max(maximum_, new_value);
     }
 
     void inherit_quantization(const Grid_Quantized& source) {
@@ -139,6 +156,9 @@ private:
       maximum_ = source.maximum_;
       scale_ = source.scale_;
       spacing_ = source.spacing_;
+      error_bound_ = source.error_bound_;
+      step_error_ = source.step_error_;
+      initialized_ = source.initialized_;
     }
 
     double minimum() const { return minimum_; }
@@ -148,15 +168,28 @@ private:
       return minimum_ + grid_(row, col) * spacing_;
     }
 
-    bool can_quantize() const { return maximum_ - minimum_ <= MAX_QUANTIZED_RANGE; }
+    bool can_step() const { return error_bound_ + step_error_ <= ERROR_BUDGET; }
 
     void initialize(const Grid& owner) {
+      if (initialized_) {
+        return;
+      }
+
       // a clamp for if the range is 0, this kinda exist so that the existing logic would work
-      // properly under this edge case.
+      // properly under this edge case
       const double range{std::max(maximum_ - minimum_, 1e-20)};
 
       scale_ = static_cast<double>(QMAX) / range;
       spacing_ = range / static_cast<double>(QMAX);
+      error_bound_ += INITIAL_ERROR_UNITS * spacing_;
+
+      // Empirical error estimate, not a worst-case guarantee.
+      step_error_ = ERROR_UNITS_PER_STEP * spacing_;
+
+      if (!can_step()) {
+        return;
+      }
+
       for (std::size_t row{0}; row < owner.rows_; ++row) {
         for (std::size_t col{0}; col < owner.cols_; ++col) {
           double encoded{(owner.grid_(row, col) - minimum_) * scale_};
@@ -164,6 +197,7 @@ private:
           grid_(row, col) = static_cast<uint32_t>(encoded + 0.5);
         }
       }
+      initialized_ = true;
     }
 
     void decode(const Grid& owner) const {
@@ -176,7 +210,7 @@ private:
   };
 
   mutable Grid_Quantized quantized_;
-  mutable bool use_quantized_{false};
+  mutable bool use_quantized_{true};
   std::size_t step_count_{0};
 
   void switch_to_double() const {
@@ -184,8 +218,21 @@ private:
       return;
     }
 
-    quantized_.decode(*this);
+    if (quantized_.initialized_) {
+      quantized_.decode(*this);
+    }
     use_quantized_ = false;
+  }
+
+  void prepare_quantization() const {
+    if (!use_quantized_) {
+      return;
+    }
+
+    quantized_.initialize(*this);
+    if (!quantized_.can_step()) {
+      switch_to_double();
+    }
   }
 
   void set_value(std::size_t row, std::size_t col, double value) {
@@ -193,8 +240,13 @@ private:
       throw std::invalid_argument("Grid values must be finite");
     }
 
-    switch_to_double();
+    if (quantized_.initialized_) {
+      switch_to_double();
+    }
     grid_(row, col) = value;
+    if (use_quantized_) {
+      quantized_.record_write(value);
+    }
   }
 
   friend class GridView;
@@ -214,7 +266,7 @@ public:
         : owner_{owner}, row_{row}, col_{col} {}
 
     operator double() const {
-      if (owner_.use_quantized_) {
+      if (owner_.use_quantized_ && owner_.quantized_.initialized_) {
         return owner_.quantized_.value(row_, col_);
       }
 
@@ -289,7 +341,7 @@ public:
   inline std::size_t rows() const { return grid_.rows(); }
   inline std::size_t cols() const { return grid_.cols(); }
 
-  bool is_quantized() const { return grid_.use_quantized_; }
+  bool is_quantized() const { return grid_.use_quantized_ && grid_.quantized_.initialized_; }
 
   double operator()(std::size_t i, std::size_t j) const { return grid_(i, j); }
 
@@ -320,6 +372,7 @@ inline void apply_stencil_quantized(const GridView& source, Grid& destination) {
 
   auto& next{destination.quantized_};
   next.inherit_quantization(old);
+  next.error_bound_ += next.step_error_;
 
   std::memcpy(destination.quantized_ptr(0, 0), source.quantized_ptr(0, 0), cols * sizeof(uint32_t));
   std::memcpy(destination.quantized_ptr(rows - 1, 0), source.quantized_ptr(rows - 1, 0),cols * sizeof(uint32_t));
@@ -345,40 +398,34 @@ inline void apply_stencil_quantized(const GridView& source, Grid& destination) {
 inline void apply_stencil_impl(const GridView& old_grid, Grid& new_grid) {
   const std::size_t rows{old_grid.rows()};
   const std::size_t cols{old_grid.cols()};
+
+  if (!(rows == new_grid.rows() && cols == new_grid.cols())) {
+    throw std::invalid_argument("Input and output grids must have matching dimensions");
+  }
+
+  // Copy logical boundary cells
   std::memcpy(new_grid.ptr(0, 0), old_grid.ptr(0, 0), cols * sizeof(double));
   std::memcpy(new_grid.ptr(rows - 1, 0), old_grid.ptr(rows - 1, 0), cols * sizeof(double));
 
-  // Include fixed boundaries in the range, as well as updated interior cells.
-  double minimum{old_grid.ptr(0, 0)[0]};
-  double maximum{minimum};
-  for (std::size_t col{0}; col < cols; ++col) {
-    const double first{new_grid.ptr(0, 0)[col]};
-    const double last{new_grid.ptr(rows - 1, 0)[col]};
-    minimum = std::min(minimum, std::min(first, last));
-    maximum = std::max(maximum, std::max(first, last));
-  }
+// Rows have uniform work; static scheduling assigns each output row one writer.
+  #pragma omp parallel for schedule(static)
+  for (std::size_t i = 1; i < rows - 1; ++i) {
+    const double* top{old_grid.ptr(i - 1, 0)};
+    const double* mid{old_grid.ptr(i, 0)};
+    const double* bottom{old_grid.ptr(i + 1, 0)};
 
-  #pragma omp parallel for schedule(static) reduction(min:minimum) reduction(max:maximum)
-  for (std::size_t row = 1; row < rows - 1; ++row) {
-    const double* top{old_grid.ptr(row - 1, 0)};
-    const double* mid{old_grid.ptr(row, 0)};
-    const double* bottom{old_grid.ptr(row + 1, 0)};
-    double* __restrict out{new_grid.ptr(row, 0)};
+    // Specify out is the only holder of this data within this scope with restrict, permitting
+    // potential compiler optimization without worrying about alias pointers
+    double* __restrict out{new_grid.ptr(i, 0)};
+
     out[0] = mid[0];
     out[cols - 1] = mid[cols - 1];
-    minimum = std::min(minimum, std::min(out[0], out[cols - 1]));
-    maximum = std::max(maximum, std::max(out[0], out[cols - 1]));
 
-    #pragma omp simd reduction(min:minimum) reduction(max:maximum)
-    for (std::size_t col = 1; col < cols - 1; ++col) {
-      const double value{0.5 * mid[col] +
-          0.125 * (top[col] + bottom[col] + mid[col - 1] + mid[col + 1])};
-      out[col] = value;
-      minimum = std::min(minimum, value);
-      maximum = std::max(maximum, value);
+    #pragma omp simd
+    for (std::size_t j = 1; j < cols - 1; ++j) {
+      out[j] = 0.5 * mid[j] + 0.125 * (top[j] + bottom[j] + mid[j - 1] + mid[j + 1]);
     }
   }
-  new_grid.quantized_.record_range(minimum, maximum);
 }
 
 // Apply the five-point stencil over all interior points, copying the boundary
@@ -388,18 +435,18 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     throw std::invalid_argument("Input and output grids must have matching dimensions");
   }
 
+  old_grid.prepare_quantization();
+  if (!new_grid.use_quantized_) {
+    old_grid.switch_to_double();
+  }
+
   const GridView source{old_grid};
 
   if (source.is_quantized()) {
     apply_stencil_quantized(source, new_grid);
-    new_grid.use_quantized_ = true;
   } else {
     new_grid.use_quantized_ = false;
     apply_stencil_impl(source, new_grid);
-    if (new_grid.quantized_.can_quantize()) {
-      new_grid.quantized_.initialize(new_grid);
-      new_grid.use_quantized_ = true;
-    }
   }
 
   new_grid.step_count_ = old_grid.step_count_ + 1;
