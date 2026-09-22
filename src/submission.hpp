@@ -279,7 +279,7 @@ inline void apply_stencil_impl(const GridView& input, Grid& destination) {
     const double* mid{input.ptr(row, 0)};
     double* __restrict out{destination.grid_.ptr(row, 0)};
 
-    // The outer edges keep their original temperatures.
+    // The outer edges keep their original temperatures
     if (row == 0 || row + 1 == rows) {
       std::memcpy(out + next.first_col, mid + next.first_col,width * sizeof(double));
       continue;
