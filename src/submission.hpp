@@ -192,8 +192,9 @@ inline void update_row(const double* top, const double* mid,
 #endif
 
   // either calculate what remains or calculate the entire row if AVX not enabled 
-  for (; col < end_col; ++col) {
-    out[col] = 0.5 * mid[col] + 0.125 * (top[col] + bottom[col] + mid[col - 1] + mid[col + 1]);
+  #pragma omp simd
+  for (std::size_t i = col; i < end_col; ++i) {
+    out[i] = 0.5 * mid[i] + 0.125 * (top[i] + bottom[i] + mid[i - 1] + mid[i + 1]);
   }
 }
 
@@ -219,8 +220,8 @@ inline void apply_stencil(const Grid& source, Grid& destination) {
   const std::size_t first_col{std::max(next.first_col, std::size_t{1})};
   const std::size_t end_col{std::min(next.end_col, cols - 1)};
   const std::size_t width{next.end_col - next.first_col};
-  
-  #pragma omp parallel for schedule(static) if ((next.end_row - next.first_row) * width >= 16384)
+
+  #pragma omp parallel for schedule(static)
   for (std::size_t row = next.first_row; row < next.end_row; ++row) {
     const double* mid{source.grid_.ptr(row, 0)};
     double* __restrict out{destination.grid_.ptr(row, 0)};
