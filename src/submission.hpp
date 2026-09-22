@@ -434,7 +434,10 @@ inline void apply_stencil(const Grid& old_grid, Grid& new_grid) {
     apply_stencil_quantized(source, new_grid);
   } else {
     new_grid.use_quantized_ = false;
-    apply_stencil_impl(source, new_grid);
+    // Temporary diagnostic: repeat the double fallback using the same source.
+    for (std::size_t repeat{0}; repeat < 4; ++repeat) {
+      apply_stencil_impl(source, new_grid);
+    }
   }
 
   new_grid.step_count_ = old_grid.step_count_ + 1;
