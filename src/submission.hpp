@@ -155,24 +155,21 @@ private:
   void clear_stale_values(const ActiveArea& next) {
     detect_active_area();
     const ActiveArea previous{active_};
+
+    // detect for either empty or greater overlap
     if (previous.empty() ||
         (!next.empty() && next.first_row <= previous.first_row &&
          next.end_row >= previous.end_row && next.first_col <= previous.first_col &&
          next.end_col >= previous.end_col)) {
       return;
     }
+
+    // reset stale grid 
     for (std::size_t row = previous.first_row; row < previous.end_row; ++row) {
-      double* out{grid_.ptr(row, 0)};
-      if (next.empty() || row < next.first_row || row >= next.end_row) {
-        std::fill(out + previous.first_col, out + previous.end_col, 0.0);
-      } else {
-        const std::size_t left_end{std::min(previous.end_col, next.first_col)};
-        const std::size_t right_begin{std::max(previous.first_col, next.end_col)};
-        if (previous.first_col < left_end) {
-          std::fill(out + previous.first_col, out + left_end, 0.0);
-        }
-        if (right_begin < previous.end_col) {
-          std::fill(out + right_begin, out + previous.end_col, 0.0);
+      for (std::size_t col = previous.first_col; col < previous.end_col; ++col) {
+        if (row < next.first_row || row >= next.end_row ||
+            col < next.first_col || col >= next.end_col) {
+          grid_(row, col) = 0.0;
         }
       }
     }
