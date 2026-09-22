@@ -164,7 +164,7 @@ private:
       }
 
       // a clamp for if the range is 0, this kinda exist so that the existing logic would work
-      // properly under this edge case
+      // properly under this edge case.
       const double range{std::max(maximum_ - minimum_, 1e-20)};
 
       scale_ = static_cast<double>(QMAX) / range;
