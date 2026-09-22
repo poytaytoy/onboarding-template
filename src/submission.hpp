@@ -136,11 +136,27 @@ private:
   std::size_t rows_;
   std::size_t cols_;
   PaddedAlignedVector<double> grid_;
-  ActiveArea active_{};
+  mutable ActiveArea active_{};
+  mutable bool bounds_need_scan_{false};
+
+  // Zero writes may shrink the rectangle. Recheck it once, after the writes finish.
+  const ActiveArea& active_area() const {
+    if (bounds_need_scan_) {
+      const ActiveArea previous{active_};
+      active_ = {};
+      for (std::size_t row = previous.first_row; row < previous.end_row; ++row) {
+        for (std::size_t col = previous.first_col; col < previous.end_col; ++col) {
+          if (grid_(row, col) != 0.0) active_.include(row, col);
+        }
+      }
+      bounds_need_scan_ = false;
+    }
+    return active_;
+  }
 
   // Usually the next update covers all old values. Clear them only if it doesn't.
   void clear_stale_values(const ActiveArea& next) {
-    const ActiveArea previous{active_};
+    const ActiveArea previous{active_area()};
     if (previous.empty() ||
         (!next.empty() && next.first_row <= previous.first_row &&
          next.end_row >= previous.end_row && next.first_col <= previous.first_col &&
@@ -157,7 +173,7 @@ private:
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  // Nonzero assignments expand the bounds; zero assignments need no rescan.
+  // Nonzero writes expand bounds immediately; zero writes inside may shrink them.
   class CellProxy {
     Grid& owner_;
     std::size_t row_, col_;
@@ -170,6 +186,9 @@ public:
       owner_.grid_(row_, col_) = value;
       if (value != 0.0) {
         owner_.active_.include(row_, col_);
+      } else if (row_ >= owner_.active_.first_row && row_ < owner_.active_.end_row &&
+                 col_ >= owner_.active_.first_col && col_ < owner_.active_.end_col) {
+        owner_.bounds_need_scan_ = true;
       }
       return *this;
     }
@@ -200,7 +219,7 @@ class GridView {
   friend void apply_stencil_impl(const GridView& source, Grid& destination);
 
 public:
-  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_} {}
+  explicit GridView(const Grid& grid) : grid_{grid}, active_{grid.active_area()} {}
 
   std::size_t rows() const { return grid_.rows(); }
   std::size_t cols() const { return grid_.cols(); }
