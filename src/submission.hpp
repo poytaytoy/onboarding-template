@@ -341,14 +341,13 @@ public:
   }
 };
 
-// Divide each term first, then recover whole units from the summed remainders.
+// QMAX keeps the four-neighbor sum within uint32_t; recover the combined remainder.
 inline uint32_t quantized_stencil_value(uint32_t center, uint32_t top, uint32_t bottom,
-                                        uint32_t left, uint32_t right, uint32_t rounding_offset) {
-  const uint32_t whole{(center >> 1) + (top >> 3) + (bottom >> 3) + (left >> 3) + (right >> 3)};
-  const uint32_t remainder{4u * (center & 1u) + (top & 7u) + (bottom & 7u) + (left & 7u) +
-                           (right & 7u)};
+                                       uint32_t left, uint32_t right, uint32_t rounding_offset) {
+  const uint32_t neighbors{top + bottom + left + right};
+  const uint32_t remainder{4u * (center & 1u) + (neighbors & 7u)};
 
-  return whole + ((remainder + rounding_offset) >> 3);
+  return (center >> 1) + (neighbors >> 3) + ((remainder + rounding_offset) >> 3);
 }
 
 inline void apply_stencil_quantized(const GridView& source, Grid& destination) {
