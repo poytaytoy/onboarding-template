@@ -99,13 +99,25 @@ public:
   }
 };
 
-// Rectangle containing the nonzero cells. The end row and column are excluded.
+// Rectangle containing every cell that may be nonzero, including retained references.
+// The end row and column are excluded.
 struct ActiveArea {
   std::size_t first_row{0}, end_row{0};
   std::size_t first_col{0}, end_col{0};
-  bool valid{true};
 
   bool empty() const { return first_row == end_row || first_col == end_col; }
+
+  void include(const ActiveArea& other) {
+    if (other.empty()) return;
+    if (empty()) {
+      *this = other;
+      return;
+    }
+    first_row = std::min(first_row, other.first_row);
+    end_row = std::max(end_row, other.end_row);
+    first_col = std::min(first_col, other.first_col);
+    end_col = std::max(end_col, other.end_col);
+  }
 
   // Grow by one cell on each side, stopping at the grid edges.
   void expand(std::size_t rows, std::size_t cols) {
@@ -124,32 +136,7 @@ private:
   std::size_t rows_;
   std::size_t cols_;
   PaddedAlignedVector<double> grid_;
-  mutable ActiveArea active_{};
-
-  // Find the nonzero rectangle again after cells have been accessed for writing.
-  const ActiveArea& active_area() const {
-    if (active_.valid) {
-      return active_;
-    }
-
-    active_ = {};
-    for (std::size_t row{0}; row < rows_; ++row) {
-      for (std::size_t col{0}; col < cols_; ++col) {
-        if (grid_(row, col) == 0.0) {
-          continue;
-        }
-        if (active_.empty()) {
-          active_ = {row, row + 1, col, col + 1};
-        } else {
-          active_.first_row = std::min(active_.first_row, row);
-          active_.end_row = std::max(active_.end_row, row + 1);
-          active_.first_col = std::min(active_.first_col, col);
-          active_.end_col = std::max(active_.end_col, col + 1);
-        }
-      }
-    }
-    return active_;
-  }
+  ActiveArea active_{};
 
   friend void apply_stencil(const Grid& source, Grid& destination);
 
@@ -159,10 +146,9 @@ public:
   std::size_t rows() const { return rows_; }
   std::size_t cols() const { return cols_; }
 
-  // This cell may be changed, so the saved rectangle must be checked again.
-  // Finish reference writes before applying a stencil.
+  // Keep this cell in the rectangle: the returned reference may be written later.
   double& operator()(std::size_t row, std::size_t col) {
-    active_.valid = false;
+    active_.include({row, row + 1, col, col + 1});
     return grid_(row, col);
   }
   double operator()(std::size_t row, std::size_t col) const {
@@ -198,8 +184,7 @@ inline void update_row(const double* top, const double* mid,
   }
 }
 
-// Alternate two grids: initialize the source and leave the destination zero.
-// Between steps, only the stencil should change their cells.
+// Update into a separate grid, overwriting any previous destination values.
 inline void apply_stencil(const Grid& source, Grid& destination) {
   const std::size_t rows{source.rows_}, cols{source.cols_};
   if (rows != destination.rows_ || cols != destination.cols_) {
@@ -210,8 +195,10 @@ inline void apply_stencil(const Grid& source, Grid& destination) {
   }
 
   // Heat can only spread by one cell in each direction per step.
-  ActiveArea next{source.active_area()};
+  ActiveArea next{source.active_};
   next.expand(rows, cols);
+  // Cover old destination values and any references previously handed out.
+  next.include(destination.active_);
   destination.active_ = next;
   if (next.empty()) {
     return;
